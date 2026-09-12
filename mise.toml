@@ -1,0 +1,6 @@
+[env]
+RUSTC_WRAPPER = "sccache"
+
+[tools]
+rust = { version = "1.95", components = "rust-analyzer" }
+sccache = "latest"
