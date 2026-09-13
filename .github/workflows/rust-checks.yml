@@ -19,7 +19,6 @@ jobs:
       - name: Install Rust with rustfmt
         uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2
         with:
-          components: rustfmt
           cache: false
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -32,8 +31,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #7.1
       - name: Install Rust with Clippy
         uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2
-        with:
-          components: clippy
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
