@@ -1047,7 +1047,7 @@ impl ScadlineApp {
             painter.add(egui::Shape::convex_polygon(
                 face.points.to_vec(),
                 fill,
-                Stroke::new(1.2, Color32::from_gray(190)),
+                Stroke::new(1.2_f32, Color32::from_gray(190)),
             ));
             let face_center = face
                 .points
@@ -1125,7 +1125,7 @@ impl ScadlineApp {
                 let center_y = timeline_rect.center().y;
                 ui.painter().line_segment(
                     [Pos2::new(left, center_y), Pos2::new(right, center_y)],
-                    Stroke::new(2.0, Color32::from_gray(75)),
+                    Stroke::new(2.0_f32, Color32::from_gray(75)),
                 );
 
                 for index in 0..=max_position {
@@ -1328,7 +1328,7 @@ impl ScadlineApp {
         for (endpoint, color, label) in axes {
             let rotated = self.rotate_vertex(endpoint, Vec3::default());
             let end = origin + Vec2::new(rotated.x * scale, -rotated.y * scale);
-            painter.line_segment([origin, end], Stroke::new(1.5, color));
+            painter.line_segment([origin, end], Stroke::new(1.5_f32, color));
             painter.text(
                 end,
                 Align2::CENTER_CENTER,
