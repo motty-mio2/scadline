@@ -7,7 +7,9 @@ edition = "2024"
 bytemuck = "1.23"
 eframe = "0.31"
 rfd = "0.15"
+serde = { version = "1", features = ["derive"] }
 stl_io = "0.8"
+toml = "0.9"
 
 [profile.release]
 lto = "thin"
