@@ -1,0 +1,182 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Verify release version
+    runs-on: ubuntu-24.04
+    outputs:
+      should_release: ${{ steps.version.outputs.should_release }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      reuse_draft: ${{ steps.version.outputs.reuse_draft }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.1
+        with:
+          fetch-depth: 2
+      - name: Install Rust with rustfmt and Clippy
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2
+      - id: version
+        name: Detect a release version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ -z "$version" ]; then
+            echo "Cargo.toml does not contain a package version" >&2
+            exit 1
+          fi
+          tag="v$version"
+
+          if [ "${{ github.event_name }}" = "push" ]; then
+            previous=$(git show HEAD^:Cargo.toml 2>/dev/null | sed -n 's/^version = "\([^"]*\)"/\1/p' | head -n 1 || true)
+            if [ "$version" = "$previous" ]; then
+              {
+                echo "should_release=false"
+                echo "version=$version"
+                echo "tag=$tag"
+                echo "reuse_draft=false"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          reuse_draft=false
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag"; then
+            release=$(gh release view "$tag" --json isDraft,targetCommitish)
+            is_draft=$(jq -r '.isDraft' <<<"$release")
+            target=$(jq -r '.targetCommitish' <<<"$release")
+            if [ "$is_draft" != true ] || [ "$target" != "$GITHUB_SHA" ]; then
+              echo "Release tag $tag already exists" >&2
+              exit 1
+            fi
+            echo "Reusing draft release for $tag"
+            reuse_draft=true
+          fi
+          {
+            echo "should_release=true"
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "reuse_draft=$reuse_draft"
+          } >> "$GITHUB_OUTPUT"
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run tests
+        run: cargo test --all-features
+
+  build:
+    name: Build ${{ matrix.asset_name }}
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            asset_name: linux-x86_64
+            archive: tar.gz
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset_name: linux-aarch64
+            archive: tar.gz
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            asset_name: windows-x86_64
+            archive: zip
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            asset_name: windows-aarch64
+            archive: zip
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            asset_name: macos-aarch64
+            archive: tar.gz
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.1
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+      - name: Build release binary
+        run: cargo build --locked --release --target ${{ matrix.target }}
+      - id: package_unix
+        name: Package Unix binary
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          asset="scadline-${{ needs.prepare.outputs.version }}-${{ matrix.asset_name }}.tar.gz"
+          tar -czf "$asset" -C "target/${{ matrix.target }}/release" scadline
+          echo "path=$asset" >> "$GITHUB_OUTPUT"
+      - id: package_windows
+        name: Package Windows binary
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $asset = "scadline-${{ needs.prepare.outputs.version }}-${{ matrix.asset_name }}.zip"
+          Compress-Archive -Path "target/${{ matrix.target }}/release/scadline.exe" -DestinationPath $asset
+          "path=$asset" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      - name: Upload release asset
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ matrix.asset_name }}
+          path: ${{ steps.package_unix.outputs.path || steps.package_windows.outputs.path }}
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish immutable release
+    needs:
+      - prepare
+      - build
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Create draft release
+        if: needs.prepare.outputs.reuse_draft != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          TARGET: ${{ github.sha }}
+        run: gh release create "$TAG" --target "$TARGET" --draft --generate-notes --title "$TAG"
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release upload "$TAG" release-assets/* --clobber
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release edit "$TAG" --draft=false

@@ -63,6 +63,13 @@ checkout したり、作業ツリーを書き換えたりはしません。
 コードは `domain`、`application`、`infrastructure`、`presentation`に分割しています。
 責務、依存方向、egui向けの単方向UIフローは[設計ドキュメント](docs/architecture.md)を参照してください。
 
+## リリース
+
+`main` へ `Cargo.toml` のversion変更を含むコミットが入ると、GitHub ActionsがLinux
+(`x86_64` / `aarch64`)、Windows (`x86_64` / `aarch64`)、macOS (`aarch64`) のrelease binaryを
+作成します。すべてのbuildが成功してから、`v{version}` tagとimmutable GitHub Releaseを公開します。
+失敗したreleaseはActions画面から手動で再実行できます。
+
 生成済みの過去コミットはOS標準のキャッシュ領域へ保存します。
 
 - Linux: `$XDG_CACHE_HOME/scadline`（未設定時は `~/.cache/scadline`）
