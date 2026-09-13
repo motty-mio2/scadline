@@ -1,5 +1,6 @@
 use std::{
     collections::hash_map::DefaultHasher,
+    fs::OpenOptions,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     process::Command,
@@ -177,6 +178,13 @@ fn enforce_cache_size(cache_root: &Path, max_size_bytes: u64) {
     }
 }
 
+fn refresh_cache_access_time(cache_path: &Path) {
+    let _ = OpenOptions::new()
+        .write(true)
+        .open(cache_path)
+        .and_then(|file| file.set_modified(SystemTime::now()));
+}
+
 fn temporary_stl() -> Result<NamedTempFile, String> {
     Builder::new()
         .prefix("scadline-")
@@ -218,6 +226,7 @@ fn load_or_render_revision(
         && cache_path.is_file()
         && let Ok(mesh) = load_stl(cache_path)
     {
+        refresh_cache_access_time(cache_path);
         return Ok((mesh, true));
     }
 
@@ -251,6 +260,16 @@ fn load_or_render_revision(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    fn set_modified(path: &Path, time: SystemTime) {
+        OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open cache fixture")
+            .set_modified(time)
+            .expect("set cache fixture time");
+    }
 
     #[test]
     fn cache_pruning_keeps_total_under_limit() {
@@ -278,5 +297,40 @@ mod tests {
             })
             .sum();
         assert!(remaining_size <= 15);
+    }
+
+    #[test]
+    fn cache_access_refresh_preserves_a_recently_used_entry() {
+        let temporary = tempfile::tempdir().expect("create cache fixture");
+        let directory = temporary.path();
+        let accessed = directory.join("accessed.stl");
+        let evicted = directory.join("evicted.stl");
+        let retained = directory.join("retained.stl");
+        for path in [&accessed, &evicted, &retained] {
+            std::fs::write(path, [0_u8; 10]).expect("write cache fixture");
+        }
+
+        let origin = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        set_modified(&accessed, origin);
+        set_modified(&evicted, origin + Duration::from_secs(1));
+        set_modified(&retained, origin + Duration::from_secs(2));
+        refresh_cache_access_time(&accessed);
+
+        enforce_cache_size(directory, 20);
+
+        assert!(accessed.exists());
+        assert!(!evicted.exists());
+        assert!(retained.exists());
+    }
+
+    #[test]
+    fn cache_entry_larger_than_the_limit_is_not_retained() {
+        let temporary = tempfile::tempdir().expect("create cache fixture");
+        let entry = temporary.path().join("oversized.stl");
+        std::fs::write(&entry, [0_u8; 21]).expect("write cache fixture");
+
+        enforce_cache_size(temporary.path(), 20);
+
+        assert!(!entry.exists());
     }
 }
