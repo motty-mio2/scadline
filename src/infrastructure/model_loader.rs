@@ -12,7 +12,7 @@ use tempfile::{Builder, NamedTempFile};
 
 use crate::domain::{GitRevision, Mesh};
 
-use super::{GitRepository, load_stl};
+use super::{GitRepository, ModelBackend, load_stl};
 
 pub(crate) struct PlatformCacheLocation;
 
@@ -29,10 +29,15 @@ impl CacheLocation for PlatformCacheLocation {
 pub(crate) struct ModelLoader {
     cache_location: Arc<dyn CacheLocation>,
     max_cache_size_bytes: u64,
+    backend: Option<ModelBackend>,
 }
 
 impl ModelLoader {
-    pub(crate) fn new(cache_location: Arc<dyn CacheLocation>, max_cache_size_bytes: u64) -> Self {
+    pub(crate) fn new(
+        cache_location: Arc<dyn CacheLocation>,
+        max_cache_size_bytes: u64,
+        backend: Option<ModelBackend>,
+    ) -> Self {
         if let Some(cache_root) = cache_location.base_directory() {
             thread::spawn(move || {
                 let app_cache_root = cache_root.join("scadline");
@@ -43,12 +48,13 @@ impl ModelLoader {
         Self {
             cache_location,
             max_cache_size_bytes,
+            backend,
         }
     }
 
     pub(crate) fn render_worktree(&self, source: &Path) -> Result<Mesh, String> {
         let output = temporary_stl()?;
-        run_openscad(source, output.path())
+        run_openscad(source, output.path(), self.backend)
     }
 
     pub(crate) fn render_revision(&self, revision: &GitRevision) -> Result<(Mesh, bool), String> {
@@ -56,13 +62,14 @@ impl ModelLoader {
             revision,
             self.cache_location.base_directory().as_deref(),
             self.max_cache_size_bytes,
+            self.backend,
         )
     }
 
     pub(crate) fn is_cached(&self, revision: &GitRevision) -> bool {
         self.cache_location
             .base_directory()
-            .is_some_and(|root| persistent_cache_path(&root, revision).is_file())
+            .is_some_and(|root| persistent_cache_path(&root, revision, self.backend).is_file())
     }
 }
 
@@ -88,7 +95,11 @@ fn get_cache_dir() -> Option<PathBuf> {
     None
 }
 
-fn persistent_cache_path(cache_root: &Path, revision: &GitRevision) -> PathBuf {
+fn persistent_cache_path(
+    cache_root: &Path,
+    revision: &GitRevision,
+    backend: Option<ModelBackend>,
+) -> PathBuf {
     let mut repo_hasher = DefaultHasher::new();
     revision.root.hash(&mut repo_hasher);
     let repo_key = repo_hasher.finish();
@@ -97,11 +108,16 @@ fn persistent_cache_path(cache_root: &Path, revision: &GitRevision) -> PathBuf {
     revision.relative_path.hash(&mut path_hasher);
     let path_key = path_hasher.finish();
 
+    let file_name = backend.map_or_else(
+        || format!("{path_key:016x}.stl"),
+        |backend| format!("{}-{path_key:016x}.stl", backend.cache_key()),
+    );
+
     cache_root
         .join("scadline")
         .join(format!("{repo_key:016x}"))
         .join(&revision.commit.hash)
-        .join(format!("{path_key:016x}.stl"))
+        .join(file_name)
 }
 
 fn migrate_legacy_cache(cache_root: &Path) {
@@ -193,35 +209,50 @@ fn temporary_stl() -> Result<NamedTempFile, String> {
         .map_err(|error| format!("一時STLファイルを作成できません: {error}"))
 }
 
-fn run_openscad(source: &Path, output_path: &Path) -> Result<Mesh, String> {
-    let output = Command::new("openscad")
-        .arg("--export-format")
-        .arg("binstl")
-        .arg("-o")
-        .arg(output_path)
-        .arg(source)
-        .output()
-        .map_err(|error| {
-            format!(
-                "OpenSCADを起動できません: {error}\nOpenSCADがインストールされているか確認してください。"
-            )
-        })?;
+fn run_openscad(
+    source: &Path,
+    output_path: &Path,
+    backend: Option<ModelBackend>,
+) -> Result<Mesh, String> {
+    let mut command = render_command(source, output_path, backend);
+    let program = command.get_program().to_string_lossy().into_owned();
+    let output = command.output().map_err(|error| {
+        format!(
+            "{program}を起動できません: {error}\n{program}がインストールされているか確認してください。"
+        )
+    })?;
     if output.status.success() {
         load_stl(output_path)
     } else {
         Err(format!(
-            "OpenSCADエラー:\n{}",
+            "{program}エラー:\n{}",
             String::from_utf8_lossy(&output.stderr).trim()
         ))
     }
+}
+
+fn render_command(source: &Path, output_path: &Path, backend: Option<ModelBackend>) -> Command {
+    let mut command = match backend {
+        Some(ModelBackend::Openrscad) => Command::new("openrscad"),
+        _ => Command::new("openscad"),
+    };
+    if let Some(openscad_backend) = backend.and_then(ModelBackend::openscad_backend) {
+        command.arg("--backend").arg(openscad_backend);
+    }
+    if backend != Some(ModelBackend::Openrscad) {
+        command.arg("--export-format").arg("binstl");
+    }
+    command.arg("-o").arg(output_path).arg(source);
+    command
 }
 
 fn load_or_render_revision(
     revision: &GitRevision,
     cache_root: Option<&Path>,
     max_cache_size_bytes: u64,
+    backend: Option<ModelBackend>,
 ) -> Result<(Mesh, bool), String> {
-    let cache_path = cache_root.map(|root| persistent_cache_path(root, revision));
+    let cache_path = cache_root.map(|root| persistent_cache_path(root, revision, backend));
     if let Some(cache_path) = &cache_path
         && cache_path.is_file()
         && let Ok(mesh) = load_stl(cache_path)
@@ -238,7 +269,11 @@ fn load_or_render_revision(
     let result = (|| -> Result<Mesh, String> {
         GitRepository::checkout_revision(revision, &snapshot_path)?;
 
-        let mesh = run_openscad(&snapshot_path.join(&revision.relative_path), output.path())?;
+        let mesh = run_openscad(
+            &snapshot_path.join(&revision.relative_path),
+            output.path(),
+            backend,
+        )?;
         if let Some(cache_path) = &cache_path
             && let Some(parent) = cache_path.parent()
             && std::fs::create_dir_all(parent).is_ok()
@@ -260,7 +295,36 @@ fn load_or_render_revision(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use std::{ffi::OsStr, time::Duration};
+
+    #[test]
+    fn openrscad_uses_external_cli_without_openscad_only_flags() {
+        let command = render_command(
+            Path::new("model.scad"),
+            Path::new("model.stl"),
+            Some(ModelBackend::Openrscad),
+        );
+        assert_eq!(command.get_program(), OsStr::new("openrscad"));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                OsStr::new("-o"),
+                OsStr::new("model.stl"),
+                OsStr::new("model.scad")
+            ]
+        );
+    }
+
+    #[test]
+    fn manifold_uses_openscad_backend_flag() {
+        let command = render_command(
+            Path::new("model.scad"),
+            Path::new("model.stl"),
+            Some(ModelBackend::Manifold),
+        );
+        assert_eq!(command.get_program(), OsStr::new("openscad"));
+        assert!(command.get_args().any(|argument| argument == "Manifold"));
+    }
 
     fn set_modified(path: &Path, time: SystemTime) {
         OpenOptions::new()

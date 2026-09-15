@@ -39,4 +39,5 @@ necessary test boundary exists.
 
 Temporary repositories and STL files use the `tempfile` crate. Git history and snapshots use the
 local-only `git2` API with vendored libgit2, so the application does not require a `git` or `tar`
-executable. OpenSCAD remains the single required host command.
+executable. OpenSCAD is the default required host command; selecting the optional OpenRSCAD backend
+uses its separately installed `openrscad` command instead.
