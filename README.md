@@ -28,6 +28,25 @@ cargo run --release
 cargo run --release -- examples/demo.scad
 ```
 
+対応するOpenSCADでは、高速なManifoldバックエンドをCLIから選択できます。
+
+```bash
+cargo run --release -- --backend manifold examples/demo.scad
+```
+
+`--backend` には `manifold`、`cgal`、または `openrscad` を指定できます。CLIの指定は設定ファイルより
+優先されます。バックエンドを指定しなければOpenSCAD自身の既定値を使用します。
+
+[OpenRSCAD](https://openrscad.com/)をインストールして `openrscad` コマンドをPATHに置けば、
+互換性のあるモデルを次のように生成できます。
+
+```bash
+cargo run --release -- --backend openrscad examples/demo.scad
+```
+
+Scadlineが実行するコマンドは、OpenRSCAD公式CLIと同じ
+`openrscad model.scad -o out.stl` 形式です。
+
 ## 操作
 
 | 操作 | マウス / キーボード |
@@ -76,7 +95,7 @@ checkout したり、作業ツリーを書き換えたりはしません。
 - macOS: `~/Library/Caches/scadline`
 - Windows: `%LOCALAPPDATA%\\scadline`
 
-STLは `<repo-hash>/<commit-hash>/<scad-path-hash>.stl` の順に整理されます。
+STLは `<repo-hash>/<commit-hash>/[backend-]<scad-path-hash>.stl` の順に整理されます。
 同じコミットを再訪したときは OpenSCAD を再実行せず、キャッシュから即座に表示します。
 スライダー操作中も最後に選択した位置だけを生成するため、途中のコミットを無駄に
 レンダリングしません。キャッシュ保存先は `CacheLocation` として分離されているため、
@@ -92,7 +111,22 @@ STLは `<repo-hash>/<commit-hash>/<scad-path-hash>.stl` の順に整理されま
 ```toml
 [cache]
 max_size_mb = 256
+
+[openscad]
+# backend = "manifold"
 ```
+
+`openscad.backend` は省略可能で、`"manifold"`、`"cgal"`、または `"openrscad"` を指定できます。
+ScadlineはManifoldやOpenRSCADをライブラリとして組み込まず、インストール済みの外部CLIを
+子プロセスとして呼び出します。このため依存crateは増えず、ルーティング用コード以外に
+Scadline本体のバイナリサイズやビルド時間を大きくする要因はありません。
+
+OpenRSCAD自体は `Apache-2.0 OR MIT` のデュアルライセンスで、MITを選択して同梱することも
+ライセンス上は可能です。一方、Rust coreを直接リンクするとOpenRSCADの各crateに加え、native
+Manifold kernelのビルドにCMakeとC/C++コンパイラが必要になり、Scadlineのビルド時間、バイナリ
+サイズ、クロスコンパイル要件が増えます。そのため現在は軽量な外部CLI方式を採用しています。
+将来インストーラへ実行ファイルを同梱する場合は、MITライセンス文を配布物へ含めます。
+OpenRSCADで使用する `.scad` 機能の互換性についても配布元を確認してください。
 
 キャッシュ全体がこの上限を超えると、最後に表示してから時間が経ったSTLから削除します。
 STLをキャッシュから表示するたびに利用時刻を更新するため、よく使う履歴は残りやすくなります。

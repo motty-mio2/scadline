@@ -14,6 +14,7 @@ use std::{
 
 use crate::{
     application::{ModelService, RenderOutcome},
+    cli::CliOptions,
     domain::{GitHistory, GitRevision, Mesh, Vec3},
     infrastructure::{
         CacheLocation, GitRepository, ModelLoader, PlatformCacheLocation, load_or_create_config,
@@ -25,7 +26,7 @@ use egui::mutex::Mutex;
 
 use renderer::SceneRenderer;
 
-pub(crate) fn run() -> eframe::Result<()> {
+pub(crate) fn run(cli: CliOptions) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Scadline")
@@ -39,7 +40,7 @@ pub(crate) fn run() -> eframe::Result<()> {
     eframe::run_native(
         "Scadline",
         options,
-        Box::new(|cc| Ok(Box::new(AppState::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(AppState::new(cc, cli)))),
     )
 }
 
@@ -98,17 +99,23 @@ enum UiAction {
 }
 
 impl AppState {
-    fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        Self::new_with_cache_location(cc, Arc::new(PlatformCacheLocation))
+    fn new(cc: &eframe::CreationContext<'_>, cli: CliOptions) -> Self {
+        Self::new_with_cache_location(cc, Arc::new(PlatformCacheLocation), cli)
     }
 
     fn new_with_cache_location(
         cc: &eframe::CreationContext<'_>,
         cache_location: Arc<dyn CacheLocation>,
+        cli: CliOptions,
     ) -> Self {
         let config = load_or_create_config();
         let max_cache_size_bytes = config.cache.max_size_mb.saturating_mul(1024 * 1024);
-        let model_loader = Arc::new(ModelLoader::new(cache_location, max_cache_size_bytes));
+        let backend = cli.backend.or(config.openscad.backend);
+        let model_loader = Arc::new(ModelLoader::new(
+            cache_location,
+            max_cache_size_bytes,
+            backend,
+        ));
         let model_service = Arc::new(ModelService::new(model_loader));
         configure_japanese_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
@@ -139,7 +146,7 @@ impl AppState {
             prefetch_attempted: HashSet::new(),
             idle_since: Instant::now(),
         };
-        if let Some(path) = std::env::args_os().nth(1).map(PathBuf::from) {
+        if let Some(path) = cli.source_path {
             app.open_path(path, &cc.egui_ctx);
         }
         app
